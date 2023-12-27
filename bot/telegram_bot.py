@@ -40,6 +40,7 @@ class ChatGPTTelegramBot:
         bot_language = self.config['bot_language']
         self.commands = [
             BotCommand(command='help', description=localized_text('help_description', bot_language)),
+            BotCommand(command='describe', description=localized_text('describe_description', bot_language)),
             BotCommand(command='reset', description=localized_text('reset_description', bot_language)),
             BotCommand(command='stats', description=localized_text('stats_description', bot_language)),
             BotCommand(command='resend', description=localized_text('resend_description', bot_language))
@@ -77,6 +78,32 @@ class ChatGPTTelegramBot:
                 localized_text('help_text', bot_language)[2]
         )
         await update.message.reply_text(help_text, disable_web_page_preview=True)
+
+    ### WIP
+
+    async def describe(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """
+        describe the convo.
+        """
+
+        if not await is_allowed(self.config, update, context):
+            logging.warning(f'User {update.message.from_user.name} (id: {update.message.from_user.id}) '
+                            f'is not allowed to request their usage statistics')
+            await self.send_disallowed_message(update, context)
+            return
+
+        logging.info(f'User {update.message.from_user.name} (id: {update.message.from_user.id}) '
+                     f'requested a description of the present convo')
+
+        hashtag_req_message = "Could you write 10 hashtags that accurately describe our present conversation?"
+        title_req_message = "Now, imagine our conversation is about to be encapsulated in a blog post. What title would you give to the blog post? Try to be concise and effective, assuming an experienced reader who knows the topic."
+
+        with update.message._unfrozen() as message:
+            message.text = str(hashtag_req_message + " " + title_req_message)
+
+        await self.prompt(update=update, context=context)
+
+    ###
 
     async def stats(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """
@@ -1057,6 +1084,7 @@ class ChatGPTTelegramBot:
             .build()
 
         application.add_handler(CommandHandler('reset', self.reset))
+        application.add_handler(CommandHandler('describe', self.describe))
         application.add_handler(CommandHandler('help', self.help))
         application.add_handler(CommandHandler('image', self.image))
         application.add_handler(CommandHandler('tts', self.tts))

@@ -1,5 +1,6 @@
 {
     "en": {
+        "describe_description":"Describe the present conversation",
         "help_description":"Show help message",
         "reset_description":"Reset the conversation. Optionally pass high-level instructions (e.g. /reset You are a helpful assistant)",
         "image_description":"Generate image from prompt (e.g. /image cat)",
