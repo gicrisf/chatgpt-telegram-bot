@@ -1,7 +1,7 @@
 {
     "en": {
         "describe_description":"Describe the present conversation",
-        "elisp_description":"Eval elisp",
+        "eval_description":"Eval last snippet in message",
         "help_description":"Show help message",
         "reset_description":"Reset the conversation. Optionally pass high-level instructions (e.g. /reset You are a helpful assistant)",
         "image_description":"Generate image from prompt (e.g. /image cat)",

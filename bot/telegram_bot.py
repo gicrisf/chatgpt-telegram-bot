@@ -22,20 +22,6 @@ from PIL import Image
 from misaka import Markdown, HtmlRenderer
 from bs4 import BeautifulSoup
 
-class BlockElRenderer(HtmlRenderer):
-    def blockcode(self, text, lang):
-        if lang in ['elisp', 'emacs-lisp', 'lisp']:
-            return '\n<pre><code>{}</code></pre>\n'.format(text)
-        else:
-            return '<p>whatever</p>'
-
-class BlockPyRenderer(HtmlRenderer):
-    def blockcode(self, text, lang):
-        if lang in ['python', 'py']:
-            return '\n<pre><code>{}</code></pre>\n'.format(text)
-        else:
-            return '<p>whatever</p>'
-
 ###
 
 from utils import is_group_chat, get_thread_id, message_text, wrap_with_indicator, split_into_chunks, \
@@ -64,7 +50,7 @@ class ChatGPTTelegramBot:
         self.commands = [
             BotCommand(command='help', description=localized_text('help_description', bot_language)),
             BotCommand(command='describe', description=localized_text('describe_description', bot_language)),
-            BotCommand(command='elisp', description=localized_text('elisp_description', bot_language)),
+            BotCommand(command='eval', description=localized_text('eval_description', bot_language)),
             BotCommand(command='reset', description=localized_text('reset_description', bot_language)),
             BotCommand(command='stats', description=localized_text('stats_description', bot_language)),
             BotCommand(command='resend', description=localized_text('resend_description', bot_language))
@@ -127,9 +113,9 @@ class ChatGPTTelegramBot:
 
         await self.prompt(update=update, context=context)
 
-    async def elisp(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    async def eval(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """
-        Run emacs lisp script
+        Eval scripts.
         """
 
         if not await is_allowed(self.config, update, context):
@@ -141,32 +127,75 @@ class ChatGPTTelegramBot:
         replied_message = update.message.reply_to_message
 
         logging.info(f'User {update.message.from_user.name} (id: {update.message.from_user.id}) '
-                     f'requested eval of emacs lisp script in message {replied_message.message_id}')
+                     f'requested eval of a script in message {replied_message.message_id}')
 
+        class BlockCodeRenderer(HtmlRenderer):
+            def blockcode(self, text, lang):
+                templ = '\n<pre class="lang-{}"><code>{}</code></pre>\n'
+                return templ.format(lang, text)
+
+        # TODO remove this try block, it was a debug only thing
         try:
+            # Get text of the message as Markdown V2
             markdown_text = replied_message.text_markdown_v2
-            renderer = BlockElRenderer()
+            # Render the Markdown in HTML
+            renderer = BlockCodeRenderer()
             md = Markdown(renderer, extensions=('fenced-code',))
             html = md(markdown_text)
+
+            # Parse the HTML
             soup = BeautifulSoup(html, 'html.parser')
-            pre_tag = soup.find_all('pre')[-1]
-            code_tag = pre_tag.find_all('code')[-1]
-            code_content = code_tag.text.replace("```", "").strip()
-            script = "(progn\n {}\n)".format(code_content)
+
+            # Find all pre elements (we only need blockquotes)
+            codeblocks = soup.find_all('pre')
+
+            def eval_last_snippet(codeblocks):
+                if len(codeblocks) > 0:
+                    last_codeblock = codeblocks[-1]
+                    lang_class = last_codeblock.get("class")[0]
+                    if lang_class in ["lang-elisp", "lang-emacs-lisp", "lang-lisp"]:
+                        logging.info("elisp snippet found...")
+
+                        # code html element inside pre html element
+                        code_element = last_codeblock.find_all('code')[-1]
+                        # code content inside code html element
+                        snippet = code_element.text.replace("```", "").strip()
+                        # encapsulate in a progn
+                        snippet = "(progn\n {}\n)".format(snippet)
+
+                        # Emacs instance (Q flag doesn't load the config)
+                        # TODO run from an Emacs daemon
+                        emacs = EmacsBatch(args=['-Q'])
+                        # Eval the script and format the results in markdown
+                        return("```elisp\n{}\n```".format(emacs.eval(snippet)))
+                    elif lang_class in ["lang-py", "lang-python"]:
+                        logging.info("python snippet found...")
+                        # code html element inside pre html element
+                        code_element = last_codeblock.find_all('code')[-1]
+                        # code content inside code html element
+                        snippet = code_element.text.replace("```", "").strip()
+
+                        try:
+                            evaluated = eval(snippet)
+                        except Exception as e:
+                            evaluated = e
+
+                        # Eval the script and format the results in markdown
+                        return("```python\n{}\n```".format(evaluated))
+                    else:
+                        logging.info("last snippet isn't python/elisp. Checking the one before that...")
+                        return(get_last_snippet(codeblocks[:-1]))
+                else:
+                    return None
+
+            wrapped_eval = eval_last_snippet(codeblocks)
+
+            if wrapped_eval is None:
+                raise ValueError("Could be found a valid snippet.")
+
         except Exception as e:
             # logging.exception(e)
             script = e
-
-        # Emacs instance
-        # Q flag doesn't load the config
-        # TODO run an Emacs daemon
-        # TODO fare anche con Python, non solo emacs
-        # TODO supporta anche la configurazione Emacs con un comando a parte
-        emacs = EmacsBatch(args=['-Q'])
-
-        # Eval the script and format the results in markdown
-        evalued = emacs.eval(script)
-        wrapped_eval = "```elisp\n{}\n```".format(evalued)
 
         await update.message.reply_text(wrapped_eval,
                                         disable_web_page_preview=True,
@@ -1154,7 +1183,7 @@ class ChatGPTTelegramBot:
 
         application.add_handler(CommandHandler('reset', self.reset))
         application.add_handler(CommandHandler('describe', self.describe))
-        application.add_handler(CommandHandler('elisp', self.elisp))
+        application.add_handler(CommandHandler('eval', self.eval))
         application.add_handler(CommandHandler('help', self.help))
         application.add_handler(CommandHandler('image', self.image))
         application.add_handler(CommandHandler('tts', self.tts))
