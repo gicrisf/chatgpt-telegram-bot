@@ -16,6 +16,28 @@ from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, \
 from pydub import AudioSegment
 from PIL import Image
 
+### WIP
+### Evaluations utils
+# TODO export in other utils?
+from misaka import Markdown, HtmlRenderer
+from bs4 import BeautifulSoup
+
+class BlockElRenderer(HtmlRenderer):
+    def blockcode(self, text, lang):
+        if lang in ['elisp', 'emacs-lisp', 'lisp']:
+            return '\n<pre><code>{}</code></pre>\n'.format(text)
+        else:
+            return '<p>whatever</p>'
+
+class BlockPyRenderer(HtmlRenderer):
+    def blockcode(self, text, lang):
+        if lang in ['python', 'py']:
+            return '\n<pre><code>{}</code></pre>\n'.format(text)
+        else:
+            return '<p>whatever</p>'
+
+###
+
 from utils import is_group_chat, get_thread_id, message_text, wrap_with_indicator, split_into_chunks, \
     edit_message_with_retry, get_stream_cutoff_values, is_allowed, get_remaining_budget, is_admin, is_within_budget, \
     get_reply_to_message_id, add_chat_request_to_usage_tracker, error_handler, is_direct_result, handle_direct_result, \
@@ -23,6 +45,7 @@ from utils import is_group_chat, get_thread_id, message_text, wrap_with_indicato
 from openai_helper import OpenAIHelper, localized_text
 from usage_tracker import UsageTracker
 
+from emacs import EmacsBatch
 
 class ChatGPTTelegramBot:
     """
@@ -41,6 +64,7 @@ class ChatGPTTelegramBot:
         self.commands = [
             BotCommand(command='help', description=localized_text('help_description', bot_language)),
             BotCommand(command='describe', description=localized_text('describe_description', bot_language)),
+            BotCommand(command='elisp', description=localized_text('elisp_description', bot_language)),
             BotCommand(command='reset', description=localized_text('reset_description', bot_language)),
             BotCommand(command='stats', description=localized_text('stats_description', bot_language)),
             BotCommand(command='resend', description=localized_text('resend_description', bot_language))
@@ -88,7 +112,7 @@ class ChatGPTTelegramBot:
 
         if not await is_allowed(self.config, update, context):
             logging.warning(f'User {update.message.from_user.name} (id: {update.message.from_user.id}) '
-                            f'is not allowed to request their usage statistics')
+                            f'is not allowed to request a description of this conversation')
             await self.send_disallowed_message(update, context)
             return
 
@@ -102,6 +126,51 @@ class ChatGPTTelegramBot:
             message.text = str(hashtag_req_message + " " + title_req_message)
 
         await self.prompt(update=update, context=context)
+
+    async def elisp(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """
+        Run emacs lisp script
+        """
+
+        if not await is_allowed(self.config, update, context):
+            logging.warning(f'User {update.message.from_user.name} (id: {update.message.from_user.id}) '
+                            f'is not allowed to run emacs lisp script')
+            await self.send_disallowed_message(update, context)
+            return
+
+        replied_message = update.message.reply_to_message
+
+        logging.info(f'User {update.message.from_user.name} (id: {update.message.from_user.id}) '
+                     f'requested eval of emacs lisp script in message {replied_message.message_id}')
+
+        try:
+            markdown_text = replied_message.text_markdown_v2
+            renderer = BlockElRenderer()
+            md = Markdown(renderer, extensions=('fenced-code',))
+            html = md(markdown_text)
+            soup = BeautifulSoup(html, 'html.parser')
+            pre_tag = soup.find_all('pre')[-1]
+            code_tag = pre_tag.find_all('code')[-1]
+            code_content = code_tag.text.replace("```", "").strip()
+            script = "(progn\n {}\n)".format(code_content)
+        except Exception as e:
+            # logging.exception(e)
+            script = e
+
+        # Emacs instance
+        # Q flag doesn't load the config
+        # TODO run an Emacs daemon
+        # TODO fare anche con Python, non solo emacs
+        # TODO supporta anche la configurazione Emacs con un comando a parte
+        emacs = EmacsBatch(args=['-Q'])
+
+        # Eval the script and format the results in markdown
+        evalued = emacs.eval(script)
+        wrapped_eval = "```elisp\n{}\n```".format(evalued)
+
+        await update.message.reply_text(wrapped_eval,
+                                        disable_web_page_preview=True,
+                                        parse_mode=constants.ParseMode.MARKDOWN)
 
     ###
 
@@ -1085,6 +1154,7 @@ class ChatGPTTelegramBot:
 
         application.add_handler(CommandHandler('reset', self.reset))
         application.add_handler(CommandHandler('describe', self.describe))
+        application.add_handler(CommandHandler('elisp', self.elisp))
         application.add_handler(CommandHandler('help', self.help))
         application.add_handler(CommandHandler('image', self.image))
         application.add_handler(CommandHandler('tts', self.tts))
