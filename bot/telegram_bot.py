@@ -17,11 +17,8 @@ from pydub import AudioSegment
 from PIL import Image
 
 ### WIP
-### Evaluations utils
-# TODO export in other utils?
 from misaka import Markdown, HtmlRenderer
 from bs4 import BeautifulSoup
-
 ###
 
 from utils import is_group_chat, get_thread_id, message_text, wrap_with_indicator, split_into_chunks, \
@@ -134,68 +131,85 @@ class ChatGPTTelegramBot:
                 templ = '\n<pre class="lang-{}"><code>{}</code></pre>\n'
                 return templ.format(lang, text)
 
-        # TODO remove this try block, it was a debug only thing
-        try:
-            # Get text of the message as Markdown V2
-            markdown_text = replied_message.text_markdown_v2
-            # Render the Markdown in HTML
-            renderer = BlockCodeRenderer()
-            md = Markdown(renderer, extensions=('fenced-code',))
-            html = md(markdown_text)
+        # Get text of the message as Markdown V2
+        markdown_text = replied_message.text_markdown_v2
+        # Render the Markdown in HTML
+        renderer = BlockCodeRenderer()
+        md = Markdown(renderer, extensions=('fenced-code',))
+        html = md(markdown_text)
 
-            # Parse the HTML
-            soup = BeautifulSoup(html, 'html.parser')
+        # Parse the HTML
+        soup = BeautifulSoup(html, 'html.parser')
 
-            # Find all pre elements (we only need blockquotes)
-            codeblocks = soup.find_all('pre')
+        # Find all pre elements (we only need blockquotes)
+        codeblocks = soup.find_all('pre')
 
-            def eval_last_snippet(codeblocks):
-                if len(codeblocks) > 0:
-                    last_codeblock = codeblocks[-1]
-                    lang_class = last_codeblock.get("class")[0]
-                    if lang_class in ["lang-elisp", "lang-emacs-lisp", "lang-lisp"]:
-                        logging.info("elisp snippet found...")
+        # better for security
+        # you can run sessions and multiple scripts
+        # It needs org-babel to work, of course
+        def eval_org_babel(code_content):
+            """
+            encapsulate in an org-babel execution block
+            """
+            orgbuf = io.StringIO()
+            orgbuf.write('(with-temp-buffer\n')
+            orgbuf.write("(require 'ob-core)\n")
+            orgbuf.write('(org-mode)\n')
+            orgbuf.write('(insert "#+BEGIN_SRC python :results output' + r'\n")' + '\n')
+            for line in code_content.splitlines():
+                orgbuf.write("(insert \"{}\")\n".format(line + r'\n'))
+            orgbuf.write('(insert "#+END_SRC' + r'\n")' + '\n')
+            orgbuf.write('(org-babel-execute-src-block))')
 
-                        # code html element inside pre html element
-                        code_element = last_codeblock.find_all('code')[-1]
-                        # code content inside code html element
-                        snippet = code_element.text.replace("```", "").strip()
-                        # encapsulate in a progn
-                        snippet = "(progn\n {}\n)".format(snippet)
+            snippet = orgbuf.getvalue()
 
-                        # Emacs instance (Q flag doesn't load the config)
-                        # TODO run from an Emacs daemon
-                        emacs = EmacsBatch(args=['-Q'])
-                        # Eval the script and format the results in markdown
-                        return("```elisp\n{}\n```".format(emacs.eval(snippet)))
-                    elif lang_class in ["lang-py", "lang-python"]:
-                        logging.info("python snippet found...")
-                        # code html element inside pre html element
-                        code_element = last_codeblock.find_all('code')[-1]
-                        # code content inside code html element
-                        snippet = code_element.text.replace("```", "").strip()
+            try:
+                emacs = EmacsBatch(args=['-Q'])
+                return(emacs.eval(snippet))
+            except Exception as e:
+                return(e)
 
-                        try:
-                            evaluated = eval(snippet)
-                        except Exception as e:
-                            evaluated = e
+        def eval_last_snippet(codeblocks):
+            if len(codeblocks) > 0:
+                last_codeblock = codeblocks[-1]
+                lang_class = last_codeblock.get("class")[0]
+                if lang_class in ["lang-elisp", "lang-emacs-lisp", "lang-lisp"]:
+                    logging.info("elisp snippet found...")
 
-                        # Eval the script and format the results in markdown
-                        return("```python\n{}\n```".format(evaluated))
-                    else:
-                        logging.info("last snippet isn't python/elisp. Checking the one before that...")
-                        return(get_last_snippet(codeblocks[:-1]))
+                    # code html element inside pre html element
+                    code_element = last_codeblock.find_all('code')[-1]
+                    # code content inside code html element
+                    snippet = code_element.text.replace("```", "").strip()
+                    # encapsulate in a progn
+                    snippet = "(progn\n {}\n)".format(snippet)
+
+                    # Emacs instance (Q flag doesn't load the config)
+                    # TODO run from an Emacs daemon
+                    emacs = EmacsBatch(args=['-Q'])
+                    # Eval the script and format the results in markdown
+                    return("```elisp\n{}\n```".format(emacs.eval(snippet)))
+
+                elif lang_class in ["lang-py", "lang-python"]:
+                    logging.info("python snippet found...")
+                    # code html element inside pre html element
+                    code_element = last_codeblock.find_all('code')[-1]
+                    # code content inside code html element
+                    code_content = code_element.text.replace("```", "").strip()
+                    # evaluate the snippet
+                    evaluated = eval(code_content)
+                    # format the results in markdown
+                    return("```python\n{}\n```".format(evaluated))
                 else:
-                    return None
+                    logging.info("last snippet isn't python/elisp. Checking the one before that...")
+                    return(get_last_snippet(codeblocks[:-1]))
+            else:
+                return None
 
-            wrapped_eval = eval_last_snippet(codeblocks)
+        wrapped_eval = eval_last_snippet(codeblocks)
 
-            if wrapped_eval is None:
-                raise ValueError("Could be found a valid snippet.")
-
-        except Exception as e:
-            # logging.exception(e)
-            script = e
+        # if it's None, basically
+        if not type(wrapped_eval) == str:
+            wrapped_eval = "Couldn't be found a valid snippet."
 
         await update.message.reply_text(wrapped_eval,
                                         disable_web_page_preview=True,
